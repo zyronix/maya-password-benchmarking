@@ -207,9 +207,10 @@ class PassGAN(Model):
         with torch.no_grad():
             z = self.generate_random_noise(evaluation_batch_size)
             generated_data = self.Generator(z)
+            # Move the full batch to CPU once; per-row .tolist() on CUDA tensors causes many sync points.
             generated_data = torch.argmax(generated_data, 2)
-            generated_data = generated_data.type(torch.uint8)
-            generated_data = set([tuple(row.tolist()) for row in generated_data])
+            generated_data = generated_data.to(dtype=torch.uint8, device="cpu")
+            generated_data = set(tuple(row) for row in generated_data.tolist())
         return generated_data
 
     def guessing_strategy(self, evaluation_batch_size, eval_dict):
