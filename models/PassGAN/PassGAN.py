@@ -104,7 +104,12 @@ class PassGAN(Model):
         disc_iteration_counter = 0
         n_matches = 0
 
-        checkpoint_frequency = self.params['eval']['checkpoint_frequency']
+        configured_checkpoint_frequency = self.params['eval']['checkpoint_frequency']
+        checkpoint_frequency = max(
+            1,
+            math.ceil(configured_checkpoint_frequency * reference_batch_size / batch_size),
+        )
+
         validation_n_samples = self.params['eval'].get('validation_n_samples', 10**6)
 
         self.init_model()
