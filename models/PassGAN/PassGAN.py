@@ -85,7 +85,16 @@ class PassGAN(Model):
         train_size = self.data.get_train_size()
         batch_size = self.params['train']['batch_size']
         batch_4_epochs = math.ceil(train_size / batch_size)
-        num_gen_training_steps = self.params['train']['num_gen_training_steps']
+        configured_gen_training_steps = self.params['train']['num_gen_training_steps']
+        reference_batch_size = 64  # The batch size used in the original PassGAN paper, used as a reference to preserve sample budget when changing batch size.
+
+        if reference_batch_size <= 0:
+            raise ValueError("train.reference_batch_size must be > 0")
+
+        # Keep the overall generator sample budget constant when batch size changes.
+        sample_budget = configured_gen_training_steps * reference_batch_size
+        num_gen_training_steps = max(1, math.ceil(sample_budget / batch_size))
+
         disc_iters4iteration = self.params['train']['D_iters']
         epochs = math.ceil(num_gen_training_steps * disc_iters4iteration / batch_4_epochs)
         progress_bar = tqdm(range(num_gen_training_steps))
