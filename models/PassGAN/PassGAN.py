@@ -104,11 +104,14 @@ class PassGAN(Model):
         disc_iteration_counter = 0
         n_matches = 0
 
-        configured_checkpoint_frequency = self.params['eval']['checkpoint_frequency']
-        checkpoint_frequency = max(
-            1,
-            math.ceil(configured_checkpoint_frequency * reference_batch_size / batch_size),
-        )
+        num_checkpoints = self.params['eval']['num_checkpoints']
+        if num_checkpoints <= 0:
+            raise ValueError("eval.num_checkpoints must be > 0")
+
+        checkpoint_steps = {
+            max(1, math.ceil((idx * num_gen_training_steps) / num_checkpoints))
+            for idx in range(1, num_checkpoints + 1)
+        }
 
         validation_n_samples = self.params['eval'].get('validation_n_samples', 10**6)
 
@@ -127,7 +130,7 @@ class PassGAN(Model):
                     _ = self.train_generator()
                     gen_iteration_counter += 1
 
-                    if gen_iteration_counter % checkpoint_frequency == 0:
+                    if gen_iteration_counter in checkpoint_steps:
                         matches, _, _ = self.evaluate(
                             n_samples=validation_n_samples,
                             validation_mode=True,
