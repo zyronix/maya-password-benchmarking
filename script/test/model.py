@@ -107,7 +107,12 @@ class Model:
         print("-" * 40)
 
     def _setup_device(self):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        else:
+            self.device = torch.device("cpu")
         print(f"Selected device: {self.device}.")
 
     def _setup_checkpoint(self):

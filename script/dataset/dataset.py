@@ -17,6 +17,8 @@ class Dataset:
 
         self.charmap = {}
         self.inv_charmap = []
+        self._train_passwords_array = None
+        self._test_passwords_array = None
 
         if not self.load():
             self.load_dataset(is_train=True)
@@ -26,6 +28,17 @@ class Dataset:
         self.save()
 
         print(f'train {len(self.train_passwords)} test {len(self.test_passwords)}')
+
+    def _ensure_array_cache(self, is_train=True):
+        if is_train:
+            if self._train_passwords_array is None:
+                self._train_passwords_array = np.asarray(self.train_passwords, dtype=np.int64)
+            return self._train_passwords_array
+
+        if self._test_passwords_array is None:
+            # Converting the set to a list once avoids repeated allocations across evaluations.
+            self._test_passwords_array = np.asarray(list(self.test_passwords), dtype=np.int64)
+        return self._test_passwords_array
 
     def get_train_size(self):
         return len(self.train_passwords)
@@ -115,9 +128,10 @@ class Dataset:
         return password.replace('`', '')
 
     def get_batches(self, batch_size=128, is_train=True):
-        data = self.train_passwords if is_train else self.test_passwords
+        data = self._ensure_array_cache(is_train=is_train)
 
         np.random.shuffle(data)
 
         for i in range(0, len(data) - batch_size + 1, batch_size):
-            yield np.array([np.array(pwd) for pwd in data[i:i + batch_size]], dtype='float32')
+            # Yield contiguous slices to avoid per-batch Python list/array reconstruction.
+            yield data[i:i + batch_size]

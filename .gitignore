@@ -20,3 +20,6 @@ parameters/*
 models/PassGPT/tokenizer/*
 
 script/metrics/utils/*.txt
+
+.DS_Store
+.vscode/

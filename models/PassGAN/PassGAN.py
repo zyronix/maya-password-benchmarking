@@ -56,9 +56,9 @@ class PassGAN(Model):
         batch_size = self.params['train']['batch_size']
 
         self.discriminator_opt.zero_grad()
-        real_data = self.transform_truedata(real_data.to(torch.int64), self.data.charmap_size)
+        real_data = self.transform_truedata(real_data, self.data.charmap_size)
         disc_real = self.Discriminator(real_data)
-        noise = self.generate_random_noise(batch_size).to(self.device)
+        noise = self.generate_random_noise(batch_size)
         fake_data = self.Generator(noise)
         disc_fake = self.Discriminator(fake_data.detach())
         disc_cost, gradient_penalty = self.compute_disc_wgangp_loss(fake_data, real_data, disc_real, disc_fake, LAMBDA)
@@ -71,7 +71,7 @@ class PassGAN(Model):
         batch_size = self.params['train']['batch_size']
 
         self.generator_opt.zero_grad()
-        noise = self.generate_random_noise(batch_size).to(self.device)
+        noise = self.generate_random_noise(batch_size)
         fake_data = self.Generator(noise)
         disc_fake = self.Discriminator(fake_data)
         gen_cost = self.compute_gen_wgangp_loss(disc_fake)
@@ -96,6 +96,7 @@ class PassGAN(Model):
         n_matches = 0
 
         checkpoint_frequency = self.params['eval']['checkpoint_frequency']
+        validation_n_samples = self.params['eval'].get('validation_n_samples', 10**6)
 
         self.init_model()
 
@@ -104,7 +105,7 @@ class PassGAN(Model):
             print(f"Epoch: {current_epoch + 1} / {epochs}")
 
             for real_data in self.data.get_batches(batch_size=batch_size):
-                real_data = torch.tensor(real_data).to(self.device)
+                real_data = torch.from_numpy(real_data).to(self.device, dtype=torch.int64)
                 _ = self.train_discriminator(real_data)
                 disc_iteration_counter += 1
 
@@ -113,7 +114,10 @@ class PassGAN(Model):
                     gen_iteration_counter += 1
 
                     if gen_iteration_counter % checkpoint_frequency == 0:
-                        matches, _, _ = self.evaluate(n_samples=10**6, validation_mode=True)
+                        matches, _, _ = self.evaluate(
+                            n_samples=validation_n_samples,
+                            validation_mode=True,
+                        )
                         if matches >= n_matches:
                             n_matches = matches
 
@@ -135,11 +139,17 @@ class PassGAN(Model):
     def generate_random_noise(self, batch_size):
         z_prior = self.params['train']['z_prior']
         z_size = self.params['train']['layer_dim']
-        z = torch.normal(mean=0, std=z_prior, dtype=torch.float32, size=(batch_size, z_size))
+        z = torch.normal(
+            mean=0,
+            std=z_prior,
+            dtype=torch.float32,
+            size=(batch_size, z_size),
+            device=self.device,
+        )
         return z
 
     def transform_truedata(self, x, dict_size):
-        x = F.one_hot(x, dict_size).to(self.device)
+        x = F.one_hot(x, dict_size)
         x = x.to(torch.float32)
         return x
 
@@ -148,7 +158,7 @@ class PassGAN(Model):
 
         disc_cost = torch.mean(disc_fake) - torch.mean(disc_real)
 
-        alpha = torch.rand(batch_size, 1, 1).to(self.device)
+        alpha = torch.rand(batch_size, 1, 1, device=self.device)
 
         differences = fake_data - real_data
         interpolates = (real_data + (alpha * differences))
@@ -178,7 +188,7 @@ class PassGAN(Model):
 
     def sample(self, evaluation_batch_size, eval_dict):
         with torch.no_grad():
-            z = self.generate_random_noise(evaluation_batch_size).to(self.device)
+            z = self.generate_random_noise(evaluation_batch_size)
             generated_data = self.Generator(z)
             generated_data = torch.argmax(generated_data, 2)
             generated_data = generated_data.type(torch.uint8)
