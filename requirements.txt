@@ -18,3 +18,4 @@ transformers
 seaborn
 scipy
 scikit-learn
+zxcvbn
