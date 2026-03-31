@@ -4,10 +4,16 @@ import pickle
 import gzip
 # from script.metrics.statistics.evaluator import Evaluator
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterable, Sized
+from concurrent.futures import ProcessPoolExecutor
 import pandas as pd
 from tqdm import tqdm
 from zxcvbn import zxcvbn
+
+from script.metrics.statistics.evaluator import Evaluator
+from script.metrics.statistics.pattern_distribution_worker import (
+    chunk_compute_pattern_distribution,
+)
 
 
 regex = {
@@ -33,7 +39,7 @@ regex = {
 }
 
 compiled_regex = {k: re.compile(v) for k, v in regex.items()}
-DEFAULT_CHUNK_SIZE = 20480
+DEFAULT_CHUNK_SIZE = 1000
 
 
 def _decode_utf8_line(raw_line):
@@ -43,147 +49,179 @@ def _decode_utf8_line(raw_line):
         return None
 
 
-def count_passwords(file):
-    if file.endswith('.pickle'):
-        with open(file, 'rb') as f:
-            data = pickle.load(f)
-        return len(data)
-    else:
-        valid_lines = 0
-        with open(file, 'rb') as f:
-            for raw_line in f:
-                if _decode_utf8_line(raw_line) is not None:
-                    valid_lines += 1
 
-        return valid_lines
-
-
-def read_chunk(file, chunk_size=DEFAULT_CHUNK_SIZE):
-    print('Reading file')
-
+def chunk_iterable(iterable: Iterable, chunk_size=DEFAULT_CHUNK_SIZE):
     chunk = []
-    if file.endswith('.pickle'):
-        with open(file, 'rb') as f:
+    for item in iterable:
+        chunk.append(item)
+        if len(chunk) >= chunk_size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
+def _iter_passwords(file_path):
+    if file_path.endswith('.pickle'):
+        with open(file_path, 'rb') as f:
             data = pickle.load(f)
             for line in data:
-                chunk.append(line.strip())
-                if len(chunk) >= chunk_size:
-                    yield chunk
-                    chunk = [] 
-            if chunk:
-                print(f"Yielding final chunk of size {len(chunk)}") 
-                yield chunk
+                password = line.strip()
+                if password:
+                    yield password
     else:
-        with open(file, "rb") as f:
+        with open(file_path, 'rb') as f:
             for raw_line in f:
+                decoded = _decode_utf8_line(raw_line)
+                if decoded:
+                    yield decoded
 
-                decoded = raw_line.decode("utf-8", errors="ignore")
-
-                # if bytes were dropped → invalid UTF-8 existed
-                if len(decoded) != len(raw_line):
-                    continue
-
-                chunk.append(decoded.strip())
-
-                if len(chunk) >= chunk_size:
-                    yield chunk
-                    chunk = []
-
-            if chunk:
-                print(f"Yielding final chunk of size {len(chunk)}") 
-                yield chunk
-        
+def count_lines(file_path):
+    if file_path.endswith('.pickle'):
+        with open(file_path, 'rb') as f:
+            data = pickle.load(f)
+            return len(data)
+    else:
+        with open(file_path, 'rb') as f:
+            return sum(1 for _ in f if _decode_utf8_line(_) is not None)
 
 
-def _chunk_compute_pattern_distribution(chunk):
-    distribution = {}
-    length_distribution = {}
-    zxcvbn_distribution = {}
-    for pattern in regex:
-        distribution[pattern] = 0
+def read_chunk(file_path, chunk_size=DEFAULT_CHUNK_SIZE):
+    yield from chunk_iterable(_iter_passwords(file_path), chunk_size=chunk_size)
 
-    total_passwords = 0
 
-    for password in chunk:
-        if not password:
-            continue
-
-        password = password.rstrip()
-        total_passwords += 1
-
-        # Length distribution
-        password_length = len(password)
-        if length_distribution.get(password_length) is None:
-            length_distribution[password_length] = 0
-        length_distribution[password_length] += 1
-
-        # zxcvbn score distribution
-        # Score ranges from 0 to 4, where 0 is the weakest and 4 is the strongest
-        zxcvbn_score = zxcvbn(password)['score']
-        if zxcvbn_distribution.get(zxcvbn_score) is None:
-            zxcvbn_distribution[zxcvbn_score] = 0
-        zxcvbn_distribution[zxcvbn_score] += 1
-
-        # Pattern distribution over regex patterns
-        for id, pattern in compiled_regex.items():
-            if pattern.fullmatch(password):
-                distribution[id] += 1
-
-    return distribution, length_distribution, zxcvbn_distribution, total_passwords
- 
-
-def main():
-    parser = argparse.ArgumentParser(description="Password statistics analyzer")
-    parser.add_argument("--input", required=True, help="Path to password file")
-    args = parser.parse_args()
-    total_passwords = count_passwords(args.input)
+def compute_pattern_distribution(file_path):
+    print(f"Processing {file_path}")
 
     aggregated_distribution = {pattern: 0 for pattern in regex}
     aggregated_password_length_distribution = {}
     aggregated_zxcvbn_distribution = {}
-    # total_passwords = 0
+    total_passwords = 0
 
+    total_passwords_in_file = count_lines(file_path)
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        with tqdm(total=total_passwords, desc="Processing passwords") as pbar:
-            for chunk in read_chunk(args.input):
-                distribution, length_distribution, zxcvbn_distribution, passwords_in_chunk = executor.submit(_chunk_compute_pattern_distribution, chunk).result()
-                # Aggregate results
-                # (This part can be implemented to combine the distributions and total_password counts from each chunk
+    max_workers = os.cpu_count() or 1
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        with tqdm(desc="Processing passwords", unit="pwd", total=total_passwords_in_file) as pbar:
+            for distribution, length_distribution, zxcvbn_distribution, passwords_in_chunk in executor.map(
+                chunk_compute_pattern_distribution,
+                read_chunk(file_path),
+            ):
+                # Aggregate pattern distribution
                 for pattern, count in distribution.items():
                     aggregated_distribution[pattern] += count
-                
+
                 # Aggregate length distribution
                 for length, count in length_distribution.items():
                     if aggregated_password_length_distribution.get(length) is None:
                         aggregated_password_length_distribution[length] = 0
                     aggregated_password_length_distribution[length] += count
-                # Aggregate zxcvbn distribution
+
+                # Aggregate zxcvbn score distribution
                 for score, count in zxcvbn_distribution.items():
                     if aggregated_zxcvbn_distribution.get(score) is None:
                         aggregated_zxcvbn_distribution[score] = 0
                     aggregated_zxcvbn_distribution[score] += count
+
+                total_passwords += passwords_in_chunk
                 pbar.update(passwords_in_chunk)
 
-    
+    stats = {}
     # Print results
     print(f"Total passwords: {total_passwords}")
+    stats['total_passwords'] = [total_passwords, 100.0]
     print("Pattern distribution:")
     for pattern, count in sorted(aggregated_distribution.items()):
         percentage = (count / total_passwords * 100) if total_passwords > 0 else 0
+        stats[pattern] = [count, f"{percentage:.2f}"]
         print(f"  {pattern}: {count} ({percentage:.2f}%)")
     print("Password length distribution:")
     for length, count in sorted(aggregated_password_length_distribution.items()):
         percentage = (count / total_passwords * 100) if total_passwords > 0 else 0
         print(f"  Length {length}: {count} ({percentage:.2f}%)")
+        stats[f'length_{length}'] = [count, f"{percentage:.2f}"]
     average_password_length = sum(length * count for length, count in aggregated_password_length_distribution.items()) / total_passwords if total_passwords > 0 else 0
     print(f"Average password length: {average_password_length:.2f}")
     print("zxcvbn score distribution:")
     for score, count in sorted(aggregated_zxcvbn_distribution.items()):
         percentage = (count / total_passwords * 100) if total_passwords > 0 else 0
         print(f"  Score {score}: {count} ({percentage:.2f}%)")
+        stats[f'zxcvbn_score_{score}'] = [count, f"{percentage:.2f}"]
     average_zxcvbn_score = sum(score * count for score, count in aggregated_zxcvbn_distribution.items()) / total_passwords if total_passwords > 0 else 0
     print(f"Average zxcvbn score: {average_zxcvbn_score:.2f}")
+    stats['average_password_length'] = [f"{average_password_length:.2f}", 100.0]
+    stats['average_zxcvbn_score'] = [f"{average_zxcvbn_score:.2f}", 100.0]
+    return stats
 
+
+class RQ8_Evaluator(Evaluator):
+    def __init__(self, test_settings, search_settings, csv_settings):
+        super().__init__(test_settings, search_settings, csv_settings)
+
+    def _get_entries(self):
+        searching_for = {}
+        setting_strings = self._prepare_settings_strings()
+        models = self.test_settings["models"]
+        datasets = self.test_settings["train_datasets"]
+
+        if self.search_settings['real_data_mode'] != "":
+            models.append('real')
+
+        for model in models:
+            for dataset in datasets:
+                for setting_string in setting_strings:
+                    test_settings, n_samples = setting_string.split(os.sep)
+                    query = {
+                        'model': model,
+                        'train-dataset': dataset,
+                        'test-settings': test_settings,
+                        'n_samples': n_samples,
+                    }
+                    key = tuple(query.items())
+                    searching_for.setdefault(key, 0)
+
+        return self._search_entries(searching_for)
+
+    def _compute_metrics(self, guesses_paths, real_paths):
+        guesses_paths['real'] = real_paths
+
+        for model in guesses_paths:
+            for setting_string in guesses_paths[model]:
+                for dataset in guesses_paths[model][setting_string]:
+
+                    file_path = guesses_paths[model][setting_string][dataset]
+
+                    stats = compute_pattern_distribution(file_path)
+
+                    test_settings, n_samples = setting_string.split(os.sep)
+                    variable_data = []
+                    for key in stats:
+                        variable_data.append([key, stats[key][0], stats[key][1]])
+
+                    path, rows = self.prepare_to_csv(model, dataset, test_settings, n_samples, variable_data)
+
+                    if path not in self.written_rows:
+                        self.written_rows[path] = []
+                    for row in rows:
+                        self.written_rows[path].append(row)
+
+
+def main(test_settings):
+    search_settings = {
+        'mode': "guesses",
+        'real_data_mode': "full",
+    }
+
+    csv_settings = {
+        'test_name': 'rq8',
+        'fieldnames' : ["model", "train-dataset", "test-settings", "n_samples", "pattern", "matches", "match_percentage"]
+    }
+    evaluator = RQ8_Evaluator(test_settings, search_settings, csv_settings)
+    return evaluator.written_rows
+
+    parser = argparse.ArgumentParser(description="Password statistics analyzer")
+    parser.add_argument("--input", required=True, help="Path to password file")
+    args = parser.parse_args()
+    
 if __name__ == "__main__":
     main()
