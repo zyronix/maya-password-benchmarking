@@ -52,6 +52,23 @@ def _prepare_settings(test, model, dataset, setting_string, display_logs):
     return build_args_settings(args_settings)
 
 class Evaluator:
+    """Base class for evaluators that compute metrics based on generated guesses and real datasets. 
+    Subclasses should implement the _get_entries and _compute_metrics methods.
+    
+    real_data_mode in search_settings can be
+    - test
+    - train
+    - full
+
+    If set to "full", the evaluator will attempt to use the full real dataset for evaluation,
+    If set to "test" or "train", it will use the corresponding split of the dataset. 
+
+    
+    mode in search_settings can be
+    - guesses
+    - matches
+
+    """
     def __init__(self, test_settings, search_settings, csv_settings):
         self._prepare_settings(test_settings, search_settings, csv_settings)
 
@@ -72,6 +89,23 @@ class Evaluator:
         raise NotImplementedError('This method should be implemented in the subclass.')
 
     def _search_entries(self, searching_for):
+        """
+        This method checks which entries in the searching_for dictionary are already present in the corresponding CSV files.
+        It updates the searching_for dictionary to mark found entries and collects missing entries.
+        
+        Parameters:
+        searching_for (dict): A dictionary where keys are tuples of query parameters and values are flags
+        
+        Example:
+        searching_for = {
+            (('model', 'passgan'), ('train-dataset', 'rockyou'), ('test-settings', 'all-12-100-80'), ('n_samples', '500000000'))): 0
+        }
+
+        returns:
+        missing_entries (list): A list of comma-separated strings representing the missing entries that need to
+        be computed.
+
+        """
         missing_entries = []
 
         test_name = self.csv_settings['test_name']
@@ -136,6 +170,21 @@ class Evaluator:
             return 0
 
     def _get_paths(self, missing_entries):
+        """
+        This method retrieves the paths to the generated guesses and real datasets for the entries specified in missing_entries.
+        It returns two nested dictionaries: generated_paths and real_paths, organized by model, setting string, and dataset.
+
+        #TODO: check if generated_path example matches
+
+        Example:        generated_paths = {
+            'passgan': {
+                'all-12-100-80/500000000': {
+                    'rockyou': 'results/rq8/passgan/rockyou/all-12-100-80/500000000/hash/guesses/guesses.gz'
+                }
+            }
+        }
+        """
+        
         real_paths = {}
         generated_paths = {}
 
@@ -190,6 +239,15 @@ class Evaluator:
         return generated_paths, real_paths
 
     def _compute_metrics(self, generated_paths, real_paths):
+        """This method should be implemented in the subclass to compute the desired metrics based on the generated guesses and real dataset paths.
+        
+        Args:
+            generated_paths (dict): A nested dictionary containing paths to the generated guesses organized by model, setting string, and dataset.
+            real_paths (dict): A nested dictionary containing paths to the real datasets organized by setting string and dataset.
+        
+        This method writes the results to self.written_rows, which is a dictionary mapping CSV file paths to lists of rows that should be written to those files. 
+        Each row should be a comma-separated string of values corresponding to the fieldnames specified in self.csv_settings.
+        """
         raise NotImplementedError('This method should be implemented in the subclass.')
 
     def prepare_to_csv(self, model, dataset, test_settings, n_samples, variable_data):
